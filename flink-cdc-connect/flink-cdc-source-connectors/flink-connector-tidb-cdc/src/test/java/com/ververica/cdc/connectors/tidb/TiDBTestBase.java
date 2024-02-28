@@ -59,6 +59,7 @@ public class TiDBTestBase extends AbstractTestBase {
     public static final String PD_SERVICE_NAME = "pd0";
     public static final String TIKV_SERVICE_NAME = "tikv0";
     public static final String TIDB_SERVICE_NAME = "tidb0";
+    public static final String TICDC_SERVICE_NAME = "ticdc0";
 
     public static final String TIDB_USER = "root";
     public static final String TIDB_PASSWORD = "";
@@ -67,19 +68,20 @@ public class TiDBTestBase extends AbstractTestBase {
     public static final int TIKV_PORT_ORIGIN = 20160;
     public static final int PD_PORT_ORIGIN = 2379;
     public static int pdPort = PD_PORT_ORIGIN + RandomUtils.nextInt(0, 1000);
+    public static final int TICDC_PORT = 8300;
 
     @ClassRule public static final Network NETWORK = Network.newNetwork();
 
     @ClassRule
     public static final GenericContainer<?> PD =
-            new FixedHostPortGenericContainer<>("pingcap/pd:v6.1.0")
+            new FixedHostPortGenericContainer<>("pingcap/pd:v6.5.6")
                     .withFileSystemBind("src/test/resources/config/pd.toml", "/pd.toml")
-                    .withFixedExposedPort(pdPort, PD_PORT_ORIGIN)
+                    .withFixedExposedPort(PD_PORT_ORIGIN, PD_PORT_ORIGIN)
                     .withCommand(
                             "--name=pd0",
-                            "--client-urls=http://0.0.0.0:" + pdPort + ",http://0.0.0.0:2379",
+                            "--client-urls=http://0.0.0.0:2379",
                             "--peer-urls=http://0.0.0.0:2380",
-                            "--advertise-client-urls=http://pd0:" + pdPort + ",http://pd0:2379",
+                            "--advertise-client-urls=http://pd0:2379",
                             "--advertise-peer-urls=http://pd0:2380",
                             "--initial-cluster=pd0=http://pd0:2380",
                             "--data-dir=/data/pd0",
@@ -92,7 +94,7 @@ public class TiDBTestBase extends AbstractTestBase {
 
     @ClassRule
     public static final GenericContainer<?> TIKV =
-            new FixedHostPortGenericContainer<>("pingcap/tikv:v6.1.0")
+            new FixedHostPortGenericContainer<>("pingcap/tikv:v6.5.6")
                     .withFixedExposedPort(TIKV_PORT_ORIGIN, TIKV_PORT_ORIGIN)
                     .withFileSystemBind("src/test/resources/config/tikv.toml", "/tikv.toml")
                     .withCommand(
@@ -110,8 +112,8 @@ public class TiDBTestBase extends AbstractTestBase {
 
     @ClassRule
     public static final GenericContainer<?> TIDB =
-            new GenericContainer<>("pingcap/tidb:v6.1.0")
-                    .withExposedPorts(TIDB_PORT)
+            new FixedHostPortGenericContainer<>("pingcap/tidb:v6.5.6")
+                    .withFixedExposedPort(TIDB_PORT, TIDB_PORT)
                     .withFileSystemBind("src/test/resources/config/tidb.toml", "/tidb.toml")
                     .withCommand(
                             "--store=tikv",
@@ -124,13 +126,29 @@ public class TiDBTestBase extends AbstractTestBase {
                     .withStartupTimeout(Duration.ofSeconds(120))
                     .withLogConsumer(new Slf4jLogConsumer(LOG));
 
+    @ClassRule
+    public static final GenericContainer<?> TICDC =
+            new FixedHostPortGenericContainer<>("pingcap/ticdc:v6.5.8")
+                    .withFixedExposedPort(TICDC_PORT, TICDC_PORT)
+                    .withCommand(
+                            "server",
+                            "--addr=0.0.0.0:8300",
+                            "--advertise-addr=ticdc0:8300",
+                            "--pd=http://pd0:2379",
+                            "--log-file=/logs/ticdc0.log")
+                    .withNetwork(NETWORK)
+                    .dependsOn(PD)
+                    .withNetworkAliases(TICDC_SERVICE_NAME)
+                    .withStartupTimeout(Duration.ofSeconds(120))
+                    .withLogConsumer(new Slf4jLogConsumer(LOG));
+
     @BeforeClass
     public static void startContainers() throws Exception {
         // Add jvm dns cache for flink to invoke pd interface.
         DnsCacheManipulator.setDnsCache(PD_SERVICE_NAME, "127.0.0.1");
         DnsCacheManipulator.setDnsCache(TIKV_SERVICE_NAME, "127.0.0.1");
         LOG.info("Starting containers...");
-        Startables.deepStart(Stream.of(PD, TIKV, TIDB)).join();
+        Startables.deepStart(Stream.of(PD, TIKV, TIDB, TICDC)).join();
         LOG.info("Containers are started.");
     }
 
@@ -138,7 +156,7 @@ public class TiDBTestBase extends AbstractTestBase {
     public static void stopContainers() {
         DnsCacheManipulator.removeDnsCache(PD_SERVICE_NAME);
         DnsCacheManipulator.removeDnsCache(TIKV_SERVICE_NAME);
-        Stream.of(TIKV, PD, TIDB).forEach(GenericContainer::stop);
+        Stream.of(TIKV, PD, TIDB, TICDC).forEach(GenericContainer::stop);
     }
 
     public String getJdbcUrl(String databaseName) {
